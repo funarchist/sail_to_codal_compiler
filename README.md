@@ -1,0 +1,3 @@
+This repo contains a source-to-source compiler that is implemented in Ocaml form SAIL instruction semantic description language description of RISCV32I base ISA to CodAL architecture description language of design tool Codasip description of RISCV32I. It is intended to be scalable, in a sense, custom instruction descriptions can be compiled. 
+
+This backend modeled after C_backend of SAIL implementation.
