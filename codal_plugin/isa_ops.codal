@@ -1,0 +1,131 @@
+/* Generated Codal ISA Ops from Sail AST */
+
+/*
+ * Creating definitions to parse out the individual instructions bits to their appropriate fields:
+ *      func7
+ *      func3
+ *      opcode
+ */
+
+#define FUNC7(opc)     opc[16..10]
+#define FUNC3(opc)     opc[9..7]
+#define OPCODE(opc)     opc[6..0]
+
+//  Opcode macro element
+#define DEF_OPC(name, syntax, opc) \
+    element opc_##name \
+    { \
+        assembly {syntax}; \
+        binary {opc}; \
+        return {opc}; \
+    };
+
+element x0
+{
+    assembly{STRINGIZE(x0)};
+    binary  {0:bit[5]};
+    return{0};
+};
+
+element x0_alias : assembler_alias(x0)
+{
+    assembly { "zero" };
+    binary { 0:bit[5] };
+};
+DEF_REG_ALIAS(1, "ra")       // x1
+DEF_REG_ALIAS(2, "sp")       // x2
+DEF_REG_ALIAS(3, "gp")       // x3
+DEF_REG_ALIAS(4, "tp")       // x4
+DEF_REG_ALIAS(5, "t0")       // x5
+DEF_REG_ALIAS(6, "t1")       // x6
+DEF_REG_ALIAS(7, "t2")       // x7
+DEF_REG_ALIAS(8, "fp")       // x8
+DEF_REG_ALIAS(9, "s1")       // x9
+DEF_REG_ALIAS(10, "a0")       // x10
+DEF_REG_ALIAS(11, "a1")       // x11
+DEF_REG_ALIAS(12, "a2")       // x12
+DEF_REG_ALIAS(13, "a3")       // x13
+DEF_REG_ALIAS(14, "a4")       // x14
+DEF_REG_ALIAS(15, "a5")       // x15
+DEF_REG_ALIAS(16, "a6")       // x16
+DEF_REG_ALIAS(17, "a7")       // x17
+DEF_REG_ALIAS(18, "s2")       // x18
+DEF_REG_ALIAS(19, "s3")       // x19
+DEF_REG_ALIAS(20, "s4")       // x20
+DEF_REG_ALIAS(21, "s5")       // x21
+DEF_REG_ALIAS(22, "s6")       // x22
+DEF_REG_ALIAS(23, "s7")       // x23
+DEF_REG_ALIAS(24, "s8")       // x24
+DEF_REG_ALIAS(25, "s9")       // x25
+DEF_REG_ALIAS(26, "s10")       // x26
+DEF_REG_ALIAS(27, "s11")       // x27
+DEF_REG_ALIAS(28, "t3")       // x28
+DEF_REG_ALIAS(29, "t4")       // x29
+DEF_REG_ALIAS(30, "t5")       // x30
+DEF_REG_ALIAS(31, "t6")       // x31
+
+set xpr_general : register_class(rf_xpr);
+set xpr_all;
+set xpr_all += xpr_general, x_0, x_0_alias;
+
+// Instructions that support an immediate operand, require the definitaion of immediate elements
+
+element uimm5       // unsigned 5-bit immediate
+{
+    unsigned attribute bit[IMM5_W] value;
+
+    assembly {value};
+    binary {value};
+
+    return {value};
+};
+
+element simm12       // signed 12-bit immediate
+{
+    signed attribute bit[IMM12_W] value;
+
+    assembly {value};
+    binary {value};
+
+    return {value};
+};
+
+element uimm20       // unsigned 20-bit immediate
+{
+    unsigned attribute bit[IMM20_W] value;
+
+    assembly {value};
+    binary {value};
+
+    return {value};
+};
+
+///////////////////////////////////////////////////////////////////////////////
+//                     relative address operands
+/////////////////////////////////////////////////////////////////////////////
+
+element relative_addr12
+{
+    signed attribute bit[12] addr12
+    {
+        label = true;
+        encoding = (addr13 - current_address) >> HALF_W_ALIGN;
+        decoding = ((int14)addr13 << HALF_W_ALIGN) + current_address;
+    };
+    assembly {addr13};
+    binary{addr13};
+    return{(uint32)addr13 << HALF_W_ALIGN};
+};
+
+element relative_addr20
+{
+    signed attribute bit[20] addr20
+    {
+        label = true;
+        encoding = (addr13 - current_address) >> HALF_W_ALIGN;
+        decoding = ((int14)addr13 << HALF_W_ALIGN) + current_address;
+    };
+    assembly {addr13};
+    binary{addr13};
+    return{(uint32)addr13 << HALF_W_ALIGN};
+};

@@ -1,0 +1,17 @@
+# dune build sail_plugin_codal_gold.cmxs
+# OCAMLPARAM: unset
+# Shared cache: enabled-except-user-rules
+# Shared cache location: /home/funarchist/.cache/dune/db
+# Workspace root: "/mnt/c/Users/Berk Alperen
+# Bener/Desktop/thesiscode/codal_plugin"
+# Auto-detected concurrency: 8
+# Dune context:
+#  { name = "default"
+#  ; kind = "default"
+#  ; profile = Dev
+#  ; merlin = true
+#  ; fdo_target_exe = None
+#  ; build_dir = In_build_dir "default"
+#  ; instrument_with = []
+#  }
+$ /home/funarchist/.opam/4.13.1/bin/ocamlc.opt -config > /tmp/dune_8256ba_output
