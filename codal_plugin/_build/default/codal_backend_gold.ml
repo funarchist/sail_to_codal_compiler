@@ -7,6 +7,7 @@ open Libsail
 
 open Ast
 open Ast_util (*string_of_id comes from here*)
+open Ast_defs
 open Jib
 open Jib_compile
 open Jib_util
@@ -179,6 +180,65 @@ module C_config (Opts : sig
   end
 
 
+module IdMap = Map.Make (struct
+  type t = id
+  let compare = Id.compare
+end)
+
+type union_clause_info = {
+  uc_constructor : id;  (*RTYPE*)
+  uc_args : typ list;    (*[Typ_regidx; Typ_regidx; Typ_regidx; Typ_rop];, additional for enum types*)
+  uc_loc : Parse_ast.l;
+}
+
+(*This structural info will replace string based heuristics when generating
+use xpr_all as ...... like how many register will there be such as for immediate type there is only 2
+or assembly{ } ordering or binary 
+
+
+*)
+
+type union_info = union_clause_info list IdMap.t
+
+let typ_tuple_elems (typ : typ) =
+  match typ with
+  | Typ_aux (Typ_tuple typs, _) -> typs
+  | _ -> [typ]
+
+let add_union_clause (map : union_info) (union_id : id) (clause : type_union) =
+  let Tu_aux (tu_aux, _) = clause in
+  match tu_aux with
+  | Tu_ty_id (clause_typ, constructor_id) ->
+      let args = typ_tuple_elems clause_typ in
+      let loc = typ_loc clause_typ in
+      let clause_info = { uc_constructor = constructor_id; uc_args = args; uc_loc = loc } in
+      let existing = match IdMap.find_opt union_id map with Some clauses -> clauses | None -> [] in
+      IdMap.add union_id (clause_info :: existing) map
+
+let collect_union_clauses defs =
+  let handle_def acc = function
+    | DEF_aux (DEF_type (TD_aux (TD_variant (union_id, _, clauses, _), _)), _) ->
+        List.fold_left (fun m clause -> add_union_clause m union_id clause) acc clauses
+    | DEF_aux (DEF_scattered (SD_aux (SD_unioncl (union_id, clause), _)), _) ->
+        add_union_clause acc union_id clause
+    | DEF_aux (DEF_scattered (SD_aux (SD_variant (_, _), _)), _) -> acc
+    | DEF_aux (_, _) -> acc
+  in
+  List.fold_left handle_def IdMap.empty defs
+
+type enum_literals = id list IdMap.t
+
+let collect_enum_literals defs =
+  let handle_def acc = function
+    | DEF_aux (DEF_type (TD_aux (TD_enum (enum_id, members, _), _)), _) ->
+        IdMap.add enum_id members acc
+    | DEF_aux (DEF_scattered (SD_aux (SD_enumcl (enum_id, member), _)), _) ->
+        let existing = match IdMap.find_opt enum_id acc with Some members -> members | None -> [] in
+        IdMap.add enum_id (member :: existing) acc
+    | DEF_aux (DEF_scattered (SD_aux (SD_enum _, _)), _) -> acc
+    | DEF_aux (_, _) -> acc
+  in
+  List.fold_left handle_def IdMap.empty defs
 
 
 
@@ -568,16 +628,12 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
       String.concat "\n" (["// Sail mappings converted to Codal elements:"] @ mapping_comments)
 
   (* it takes argument in type cdef_aux list and returns a tuple of strings *)
-  let jib_to_codal (cdefs : cdef_aux list) =
+  let jib_to_codal union_info enum_info (cdefs : cdef_aux list) =
     (* Extract enum values from rop type for generating opcodes *)
     let rop_values =
-      List.find_map (fun cdef ->
-        match cdef with
-        | CDEF_type (CTD_enum (id, ids)) when string_of_id id = "rop" ->
-            Some (List.map string_of_id ids)
-        | _ -> None
-      ) cdefs
-      |> Option.value ~default:[]
+      match IdMap.find_opt (mk_id "rop") enum_info with
+      | Some ids -> List.map string_of_id ids
+      | None -> []
     in
 
     (***************************************************************************************************************)
@@ -914,6 +970,10 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     gets env and effects to create ctx and use ast&ctx to compile ast to jib
   with instantiated jib compiler
     *)
+    let union_info = collect_union_clauses ast.defs in
+    let enum_info = collect_enum_literals ast.defs in
+    ignore union_info;
+    ignore enum_info;
     let cdefs, _ = jib_of_ast env effects ast in
     
     (* Filter to keep only definitions from the main Sail file (not included files) *)
@@ -924,7 +984,7 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     (*So anonymous function which is used to strip the CDEF_aux from the cdef is applied to the filtered_cdefs list
     and the result is stored in cdef_aux_list list*)
     
-    let (ops_content, main_content) = jib_to_codal cdef_aux_list in
+    let (ops_content, main_content) = jib_to_codal union_info enum_info cdef_aux_list in
     
     (* Write the ops file (isa_ops.codal) *)
     let ops_filename = "isa_ops.codal" in

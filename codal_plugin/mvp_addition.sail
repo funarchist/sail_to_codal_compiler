@@ -4,6 +4,13 @@ $include <prelude.sail>
 
 $include "riscv_types_minimal.sail"
 
+union clause ast = ITYPE :  (bits(12), regidx, regidx, iop)
+
+
+mapping clause encdec = ITYPE(imm, rs1, rd, LLL) <-> imm @ encdec_reg(rs1) @ 000 @ encdec_reg(rd) @ 0b0101011
+
+
+
 
 /* Instruction type definitions */
 union clause ast = RTYPE : (regidx, regidx, regidx, rop)
