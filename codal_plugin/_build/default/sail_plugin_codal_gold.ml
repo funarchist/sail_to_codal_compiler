@@ -5,54 +5,33 @@
 
 open Libsail
 
-open Ast_util
 open Interactive.State
 
 (* No custom CLI flags for the minimal plugin *)
 let codal_options : (Flag.t * Arg.spec * string) list = []
 
-(* Rewrites needed for Codal backend - must include realize_mappings! *)
+(* MINIMAL rewrites for CodAL backend - NO realize_mappings!
+   
+   We extract structural info (encdec mappings, execute function clauses)
+   directly from the original AST. We do NOT use realize_mappings because
+   it would convert mapping definitions into functions, destroying the
+   bit pattern information we need for opcode generation.
+   
+   For semantic translation, we parse the execute function clauses directly
+   from the AST and translate Sail expressions to CodAL. *)
 let codal_rewrites =
   let open Rewrites in
   [
     ("instantiate_outcomes", [String_arg "codal"]);
-    ("realize_mappings", []);  (* This is crucial - converts mappings to functions *)
-    ("remove_vector_subrange_pats", []);
-    ("toplevel_string_append", []);
-    ("pat_string_append", []);
-    ("mapping_patterns", []);
-    ("truncate_hex_literals", []);
+    (* NO realize_mappings - we extract mappings from original AST! *)
     ("recheck_defs", []);
-    ("undefined", [Bool_arg false]);
-    ("vector_string_pats_to_bit_list", []);
-    ("remove_not_pats", []);
-    ("remove_vector_concat", []);
-    ("remove_bitvector_pats", []);
-    ("pattern_literals", [Literal_arg "all"]);
-    ("tuple_assignments", []);
-    ("vector_concat_assignments", []);
-    ("simple_struct_assignments", []);
-    ("exp_lift_assign", []);
-    ("merge_function_clauses", []);
-    ("recheck_defs", []);  (* Recheck after merging to ensure type info is preserved *)
-    ("constant_fold", [String_arg "codal"]);
   ]
 
 let codal_target out_file { ast; effect_info; env; default_sail_dir = _; _ } =
-  (* Instantiate the code generator functor with sane defaults. *)
+  (* Instantiate the code generator - simplified config, no JIB needed *)
   let module Codalgen = Codal_backend_gold.Codalgen (struct
     let generate_header = false
-    let includes = []
     let header_includes = []
-    let no_main = false
-    let no_lib = false
-    let no_rts = false
-    let no_mangle = false
-    let reserved_words = Util.StringSet.empty
-    let overrides = Name_generator.Overrides.empty
-    let branch_coverage = None
-    let assert_to_exception = false
-    let preserve_types = IdSet.empty
   end) in
 
   Reporting.opt_warnings := true;
