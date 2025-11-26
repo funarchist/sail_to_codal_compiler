@@ -240,6 +240,30 @@ let collect_enum_literals defs =
   in
   List.fold_left handle_def IdMap.empty defs
 
+(* Collect mapping definitions (encdec, mnemonic mappings, etc.) *)
+type 'a mapping_info = {
+  mi_id : id;
+  mi_clauses : 'a mapcl list;
+}
+
+type 'a mapping_collection = 'a mapping_info IdMap.t  (* map from mapping ID to its info *)
+
+let collect_mappings defs =
+  let handle_def acc = function
+    | DEF_aux (DEF_mapdef (MD_aux (MD_mapping (map_id, _, mapcls), _)), _) ->
+        (* Store mapping with its clauses *)
+        let mapping_info = { mi_id = map_id; mi_clauses = mapcls } in
+        IdMap.add map_id mapping_info acc
+    | DEF_aux (DEF_scattered (SD_aux (SD_mapcl (map_id, mapcl), _)), _) ->
+        (* Handle scattered mapping clauses - append to existing or create new *)
+        let existing = match IdMap.find_opt map_id acc with
+          | Some info -> { info with mi_clauses = mapcl :: info.mi_clauses }
+          | None -> { mi_id = map_id; mi_clauses = [mapcl] }
+        in
+        IdMap.add map_id existing acc
+    | DEF_aux (_, _) -> acc
+  in
+  List.fold_left handle_def IdMap.empty defs
 
 
 module Codalgen (Config : CODALGEN_CONFIG) = struct
@@ -258,17 +282,6 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     let ctx = initial_ctx env effect_info in
     Jibc.compile_ast ctx ast
 
-
-  (* Instruction type classification *)
-  type instruction_type = 
-    | RType of name * name * name  (* rd, rs1, rs2 *)
-    | IType of name * name * name  (* rd, rs1, imm *)
-    | BType of name * name * name  (* rs1, rs2, imm *)
-    | JType of name * name         (* rd, imm *)
-    | UType of name * name         (* rd, imm *)
-    | LoadType of name * name * name (* rd, rs1, imm *)
-    | StoreType of name * name * name (* rs1, rs2, imm *)
-    | Other
 
   (* Convert JIB operations to string representation *)
   let string_of_op = function
@@ -350,37 +363,6 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
 
   
 
-  (* Classify instruction based on name and arguments *)
-  let classify_instruction func_name args =
-    let name_lower = String.lowercase_ascii func_name in
-    match (name_lower, List.length args) with
-    | (name, 3) when string_contains name "add" || string_contains name "sub" || 
-                     string_contains name "and" || string_contains name "or" || 
-                     string_contains name "xor" || string_contains name "sll" || 
-                     string_contains name "srl" || string_contains name "sra" ||
-                     string_contains name "slt" -> 
-        RType (List.nth args 0, List.nth args 1, List.nth args 2)
-    | (name, 3) when string_contains name "addi" || string_contains name "andi" || 
-                     string_contains name "ori" || string_contains name "xori" ||
-                     string_contains name "slti" -> 
-        IType (List.nth args 0, List.nth args 1, List.nth args 2)
-    | (name, 3) when string_contains name "beq" || string_contains name "bne" || 
-                     string_contains name "blt" || string_contains name "bge" ||
-                     string_contains name "bltu" || string_contains name "bgeu" -> 
-        BType (List.nth args 0, List.nth args 1, List.nth args 2)
-    | (name, 3) when string_contains name "lw" || string_contains name "lh" || 
-                     string_contains name "lb" || string_contains name "lhu" ||
-                     string_contains name "lbu" -> 
-        LoadType (List.nth args 0, List.nth args 1, List.nth args 2)
-    | (name, 3) when string_contains name "sw" || string_contains name "sh" || 
-                     string_contains name "sb" -> 
-        StoreType (List.nth args 0, List.nth args 1, List.nth args 2)
-    | (name, 2) when string_contains name "jal" -> 
-        JType (List.nth args 0, List.nth args 1)
-    | (name, 2) when string_contains name "lui" || string_contains name "auipc" -> 
-        UType (List.nth args 0, List.nth args 1)
-    | _ -> Other
-
 (*+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*)   
 (*This evaluated parts will be in switch(op) result= ....*)
   (* Generate operation for R-type instructions *)
@@ -431,63 +413,7 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     | name when string_contains name "auipc" -> "current_pc + ((int32)imm << 12)"
     | _ -> "/* Operation */"
 
- (*+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*)   
-  (* Generate binary encoding for instructions *)
-  let generate_binary_encoding _func_name args =  (*Function ignores functioon name *)
-    match List.length args with
-    | 3 -> "FUNC7_OPC rs2 rs1 FUNC3_OPC rd OPCODE_OPC"
-    | 2 -> "imm rs1 FUNC3_OPC rd OPCODE_OPC"
-    | 1 -> "imm rd OPCODE_OPC"
-    | _ -> "OPCODE_OPC"
 
-(*i_stype_store missing*)
-(*eventually we will print binary{above return}*)
-(*Only looks at number of arguments, which might be wrong*)
-(*3->RTYPE->i_rtype_alu, JALR,BTYPE, ITYPE*)
-(*2->UTYPE->*,i_type_alu,i_type_loads*)
-(*1->JAL->*)
-
-  (* Generate semantics for instructions *)
-  let generate_semantics func_name _args _instrs =
-    Printf.sprintf "// %s semantics\n    // TODO: Implement specific semantics" func_name
-
-  (* Generate opcode definitions *)
-  let generate_opcode_definitions cdefs =
-    let opcodes = List.fold_left (fun acc cdef ->
-      match cdef with
-      | CDEF_fundef (id, _, _, _) ->
-          let func_name = string_of_id id in
-          let opcode_name = String.uppercase_ascii func_name in
-          Printf.sprintf "#define %s_OPCODE 0x%02x" opcode_name (Hashtbl.hash func_name mod 256) :: acc
-      | _ -> acc
-    ) [] cdefs in
-    String.concat "\n" (List.rev opcodes)
-
-  (* Generate function field definitions, Are we using this? *)
-  let generate_function_fields cdefs =
-    let fields = List.fold_left (fun acc cdef ->
-      match cdef with
-      | CDEF_fundef (id, _, _, _) ->
-          let func_name = string_of_id id in
-          let opcode_name = String.uppercase_ascii func_name in
-          Printf.sprintf "#define FUNC7_%s 0x%02x" opcode_name (Hashtbl.hash (func_name ^ "_func7") mod 256) ::
-          Printf.sprintf "#define FUNC3_%s 0x%02x" opcode_name (Hashtbl.hash (func_name ^ "_func3") mod 256) ::
-          acc
-      | _ -> acc
-    ) [] cdefs in
-    String.concat "\n" (List.rev fields)
-
-  (* This generates i_rtype_alu falan herhalde*)
-  let generate_instruction_sets cdefs =
-    let sets = List.fold_left (fun acc cdef -> (*i_*)
-      match cdef with
-      | CDEF_fundef (id, _, _, _) ->
-          let func_name = string_of_id id in
-          Printf.sprintf "i_%s" func_name :: acc
-      | _ -> acc
-    ) [] cdefs in
-    let sets_str = String.concat ",\n    " (List.rev sets) in
-    Printf.sprintf "set isa = %s;" sets_str
 
 
 
@@ -570,173 +496,402 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
         name attr (String.length name - 2) align (String.length name - 1) (String.length name - 2) align (String.length name - 2) (String.length name - 2) (String.length name - 2) align
     ) address_ops
 
-  (* Handle Sail register definitions and convert to Codal format *)
-  let handle_register_definitions cdefs =
-    let register_defs = List.filter_map (fun cdef ->
-      match cdef with
-      | CDEF_register (id, ctyp, instrs) ->
-          let reg_name = string_of_name id in
-          let reg_type = string_of_ctyp ctyp in
-          Some (reg_name, reg_type, instrs)
-      | _ -> None
-    ) cdefs in
-    
-    if register_defs = [] then ""
-    else
-      let register_elements = List.map (fun (reg_name, reg_type, _instrs) ->
-        match reg_name with
-        | "x0" -> 
-            "element x_0\n{\n    assembly{STRINGIZE(x0)};\n    binary  {0:bit[5]};\n    return{0};\n};\n\nelement x_0_alias : assembler_alias(x_0)\n{\n    assembly { \"zero\" };\n    binary { 0:bit[5] };\n};"
-        | name when String.length name >= 2 && String.sub name 0 1 = "x" ->
-            let reg_num = try int_of_string (String.sub name 1 (String.length name - 1)) with _ -> 0 in
-            let aliases = match reg_num with
-              | 1 -> "ra" | 2 -> "sp" | 3 -> "gp" | 4 -> "tp" | 5 -> "t0" | 6 -> "t1" | 7 -> "t2"
-              | 8 -> "fp" | 9 -> "s1" | 10 -> "a0" | 11 -> "a1" | 12 -> "a2" | 13 -> "a3" | 14 -> "a4" | 15 -> "a5"
-              | 16 -> "a6" | 17 -> "a7" | 18 -> "s2" | 19 -> "s3" | 20 -> "s4" | 21 -> "s5" | 22 -> "s6" | 23 -> "s7"
-              | 24 -> "s8" | 25 -> "s9" | 26 -> "s10" | 27 -> "s11" | 28 -> "t3" | 29 -> "t4" | 30 -> "t5" | 31 -> "t6"
-              | _ -> "x" ^ string_of_int reg_num
-            in
-            Printf.sprintf "DEF_REG_ALIAS(%d, \"%s\")       // %s" reg_num aliases name
-        | _ -> Printf.sprintf "// Register: %s : %s" reg_name reg_type
-      ) register_defs in
-      
-      let register_sets = [
-        "set xpr_general : register_class(rf_xpr);";
-        "set xpr_all;";
-        "set xpr_all += xpr_general, x_0, x_0_alias;";
-      ] in
-      
-      String.concat "\n" (register_elements @ [""] @ register_sets)
 
-  (* Handle Sail mapping definitions and convert to Codal format *)
-  let handle_mapping_definitions cdefs =
-    let mapping_defs = List.filter_map (fun cdef ->
-      match cdef with
-      | CDEF_val (id, _, _, _, _) ->
-          let val_name = string_of_id id in
-          if String.contains val_name 'r' && String.contains val_name 'g' then
-            Some val_name
-          else None
-      | _ -> None
-    ) cdefs in
-    
-    if mapping_defs = [] then ""
-    else
-      let mapping_comments = List.map (fun name ->
-        Printf.sprintf "// Mapping: %s -> converted to Codal element definitions" name
-      ) mapping_defs in
-      String.concat "\n" (["// Sail mappings converted to Codal elements:"] @ mapping_comments)
+  (* Structure to store extracted opcode information from encdec mappings *)
+  type opcode_info = {
+    oi_constructor : id;  (* RTYPE, ITYPE, etc. *)
+    oi_enum_value : id;    (* ADD, SUB, etc. *)
+    oi_bit_pattern : string;  (* Full opcode bit pattern as string for now *)
+    oi_func7 : string option;  (* func7 bits (7 bits) *)
+    oi_func3 : string option;  (* func3 bits (3 bits) *)
+    oi_opcode : string option;  (* opcode bits (7 bits) *)
+    oi_computed_value : string option;  (* Computed full opcode value *)
+  }
+
+  (* Structure to store mnemonic information *)
+  type mnemonic_info = {
+    mi_enum_value : id;
+    mi_mnemonic : string;
+  }
 
   (* it takes argument in type cdef_aux list and returns a tuple of strings *)
-  let jib_to_codal union_info enum_info (cdefs : cdef_aux list) =
-    (* Extract enum values from rop type for generating opcodes *)
-    let rop_values =
-      match IdMap.find_opt (mk_id "rop") enum_info with
-      | Some ids -> List.map string_of_id ids
+  let jib_to_codal union_info enum_info (mapping_info : 'a mapping_collection) (cdefs : cdef_aux list) =
+    (* Debug: print what mappings were collected *)
+    Printf.eprintf "=== Debug: Collected %d mappings ===\n" (IdMap.cardinal mapping_info);
+    IdMap.iter (fun id info ->
+      Printf.eprintf "  Mapping '%s' with %d clauses\n" (string_of_id id) (List.length info.mi_clauses)
+    ) mapping_info;
+    Printf.eprintf "=================================\n";
+    
+    (* Find and parse encdec mapping to extract opcode patterns *)
+    let encdec_id = mk_id "encdec" in
+    let encdec_mapping = match IdMap.find_opt encdec_id mapping_info with
+      | Some info -> 
+          Printf.eprintf "✓ Found 'encdec' mapping with %d clauses\n" (List.length info.mi_clauses);
+          Some info
+      | None -> 
+          Printf.eprintf "✗ ERROR: 'encdec' mapping not found!\n";
+          None
+    in
+    
+    (* Helper: Extract bit literal value *)
+    let extract_bit_literal (mpexp : 'b mpexp) : (string * int) option =
+      match mpexp with
+      | MPat_aux (MPat_pat (MP_aux (MP_lit (L_aux (L_bin bits, _)), _)), _) ->
+          (* Parse binary literal: 0b... *)
+          (try
+             let value = int_of_string ("0b" ^ bits) in
+             Some (bits, value)
+           with _ -> None)
+      | MPat_aux (MPat_pat (MP_aux (MP_lit (L_aux (L_hex hex, _)), _)), _) ->
+          (* Parse hex literal: 0x... *)
+          (try
+             let value = int_of_string ("0x" ^ hex) in
+             Some (hex, value)
+           with _ -> None)
+      | MPat_aux (MPat_pat (MP_aux (MP_lit (L_aux (L_num num, _)), _)), _) ->
+          (* Parse numeric literal *)
+          (try
+             let value = Big_int.to_int num in
+             Some (string_of_int value, value)
+           with _ -> None)
+      | _ -> None
+    in
+    
+    (* Helper: Extract bit pattern from right-hand side expression/pattern *)
+    let extract_bit_pattern_from_mpexp (mpexp : 'b mpexp) : string option =
+      match extract_bit_literal mpexp with
+      | Some (bits_str, _) -> Some ("0b" ^ bits_str)
+      | None ->
+          match mpexp with
+          | MPat_aux (MPat_pat (MP_aux (MP_app (id, _), _)), _) ->
+              (* Handle function calls like encdec_reg, encdec_uop, etc. *)
+              let func_name = string_of_id id in
+              if func_name = "encdec_reg" || func_name = "encdec_uop" || 
+                 func_name = "encdec_iop" || func_name = "encdec_bop" ||
+                 func_name = "encdec_sop" then
+                (* These are encoding functions - we'll need to resolve them later *)
+                Some ("<" ^ func_name ^ ">")
+              else
+                None
+          | _ -> None
+    in
+    
+    (* Helper: Extract pattern parts from concatenation and compute opcode *)
+    (* Returns: (all_parts_list, (func7, func3, opcode)) *)
+    let rec extract_pattern_parts_from_concat (mpexp : 'b mpexp) : (string list * (int option * int option * int option)) =
+      match mpexp with
+      | MPat_aux (MPat_pat (MP_aux (MP_app (id, [left; right]), _)), annot) ->
+          let func_name = string_of_id id in
+          if func_name = "@" then
+            (* Concatenation - recurse on both sides and collect all literals *)
+            (* Wrap left and right mpat values into mpexp using the same annotation *)
+            let (left_parts, _) = extract_pattern_parts_from_concat (MPat_aux (MPat_pat left, annot)) in
+            let (right_parts, _) = extract_pattern_parts_from_concat (MPat_aux (MPat_pat right, annot)) in
+            (* Combine parts *)
+            let all_parts = left_parts @ right_parts in
+            (* For RTYPE: pattern is func7 @ rs2 @ rs1 @ func3 @ rd @ opcode *)
+            (* We need to identify: first 7-bit = func7, 3-bit = func3, last 7-bit = opcode *)
+            let all_literals = List.filter_map (fun part ->
+              (* Try to parse as binary literal *)
+              try
+                if String.length part >= 2 && String.sub part 0 2 = "0b" then
+                  let bits = String.sub part 2 (String.length part - 2) in
+                  Some (bits, int_of_string ("0b" ^ bits))
+                else None
+              with _ -> None
+            ) all_parts in
+            
+            (* Identify func7, func3, opcode by position and bit width *)
+            let func7_opt = 
+              (* First 7-bit literal is func7 *)
+              (match List.find_opt (fun (bits, _) -> String.length bits = 7) all_literals with
+               | Some (_, value) -> Some value
+               | None -> None)
+            in
+            let func3_opt =
+              (* 3-bit literal is func3 (typically after registers) *)
+              (match List.find_opt (fun (bits, _) -> String.length bits = 3) all_literals with
+               | Some (_, value) -> Some value
+               | None -> None)
+            in
+            let opcode_opt =
+              (* Last 7-bit literal is opcode *)
+              (match List.rev all_literals |> List.find_opt (fun (bits, _) -> String.length bits = 7) with
+               | Some (_, value) -> Some value
+               | None -> None)
+            in
+            
+            (all_parts, (func7_opt, func3_opt, opcode_opt))
+          else
+            (match extract_bit_pattern_from_mpexp mpexp with
+             | Some s -> ([s], (None, None, None))
+             | None -> ([], (None, None, None)))
+      | _ ->
+          (match extract_bit_literal mpexp with
+           | Some (bits_str, value) ->
+               let len = String.length bits_str in
+               let func7_opt = if len = 7 then Some value else None in
+               let func3_opt = if len = 3 then Some value else None in
+               let opcode_opt = if len = 7 then Some value else None in
+               ([bits_str], (func7_opt, func3_opt, opcode_opt))
+           | None -> ([], (None, None, None)))
+    in
+    
+    (* Helper: Convert integer to binary string with specified width *)
+    let int_to_binary_string value width =
+      let rec to_bin n w acc =
+        if w <= 0 then acc
+        else to_bin (n lsr 1) (w - 1) (string_of_int (n land 1) ^ acc)
+      in
+      "0b" ^ to_bin value width ""
+    in
+    
+    (* Helper: Compute full opcode value from parts *)
+    let compute_opcode_value (func7_opt, func3_opt, opcode_opt) constructor_name : string option =
+      match (func7_opt, func3_opt, opcode_opt) with
+      | (Some func7, Some func3, Some opc) when constructor_name = "RTYPE" ->
+          (* RTYPE: func7 (7 bits) @ func3 (3 bits) @ opcode (7 bits) = 17 bits total *)
+          let full_value = (func7 lsl 10) lor (func3 lsl 7) lor opc in
+          Some (int_to_binary_string full_value 17)
+      | (None, Some func3, Some opc) when constructor_name = "ITYPE" || constructor_name = "BTYPE" || constructor_name = "STORE" ->
+          (* ITYPE/BTYPE/STORE: func3 (3 bits) @ opcode (7 bits) = 10 bits total *)
+          let full_value = (func3 lsl 7) lor opc in
+          Some (int_to_binary_string full_value 10)
+      | (Some func7, Some func3, Some opc) when constructor_name = "SHIFTIOP" ->
+          (* SHIFTIOP: func7 (7 bits) @ func3 (3 bits) @ opcode (7 bits) = 17 bits total *)
+          let full_value = (func7 lsl 10) lor (func3 lsl 7) lor opc in
+          Some (int_to_binary_string full_value 17)
+      | (None, None, Some opc) when constructor_name = "UTYPE" || constructor_name = "JAL" ->
+          (* UTYPE/JAL: opcode (7 bits) only *)
+          Some (int_to_binary_string opc 7)
+      | _ -> None
+    in
+    
+    (* Helper: Resolve helper mapping (encdec_uop, encdec_bop, etc.) to get opcode value *)
+    let resolve_helper_mapping (helper_name : string) (enum_value_id : id) : int option =
+      (* Look for mapping like encdec_uop, encdec_bop, etc. *)
+      let helper_id = mk_id helper_name in
+      match IdMap.find_opt helper_id mapping_info with
+      | Some info ->
+          (* Find the clause that maps enum_value_id to a bit pattern *)
+          let rec find_mapping = function
+            | [] -> None
+            | mapcl :: rest ->
+                match mapcl with
+                | MCL_aux (MCL_bidir (left_mpexp, right_mpexp), _) ->
+                    (* Check if left side matches enum_value_id *)
+                    (match left_mpexp with
+                     | MPat_aux (MPat_pat (MP_aux (MP_id id, _)), _) ->
+                         if Id.compare id enum_value_id = 0 then
+                           (* Extract bit value from right side *)
+                           (match extract_bit_literal right_mpexp with
+                            | Some (_, value) -> Some value
+                            | None -> None)
+                         else find_mapping rest
+                     | _ -> find_mapping rest)
+                | _ -> find_mapping rest
+          in
+          find_mapping info.mi_clauses
+      | None -> None
+    in
+    
+    (* Parse encdec mapping clauses to extract opcode information *)
+    let parse_encdec_clause (mapcl : 'b mapcl) : opcode_info option =
+      match mapcl with
+      | MCL_aux (MCL_bidir (left_mpexp, right_mpexp), _) ->
+          (* Extract constructor and enum value from left pattern *)
+          let extract_from_pattern (mpexp : 'b mpexp) =
+            match mpexp with
+            | MPat_aux (MPat_pat (MP_aux (MP_app (constructor_id, args), _)), _) ->
+                (* Get the last argument which should be the enum value *)
+                (match args with
+                 | [] -> None
+                 | args_list ->
+                     let last_arg = List.nth args_list (List.length args_list - 1) in
+                     match last_arg with
+                     | MP_aux (MP_id enum_value_id, _) ->
+                         Some (constructor_id, enum_value_id)
+                     | _ -> None)
+        | _ -> None
+          in
+          (match extract_from_pattern left_mpexp with
+           | Some (constructor_id, enum_value_id) ->
+               (* Extract pattern parts and compute opcode value *)
+               let (pattern_parts, (func7_opt, func3_opt, opcode_opt)) = 
+                 extract_pattern_parts_from_concat right_mpexp in
+               
+               (* Check if we need to resolve helper mappings (e.g., encdec_uop, encdec_bop) *)
+               (* For UTYPE: pattern is imm @ rd @ encdec_uop(op) *)
+               (* For BTYPE: pattern includes encdec_bop(op) *)
+               let constructor_name = string_of_id constructor_id in
+               let resolved_func3_opt = 
+                 (* If func3 is missing but we have a helper mapping, resolve it *)
+                 if func3_opt = None then
+                   match constructor_name with
+                   | "UTYPE" -> 
+                       (* UTYPE uses encdec_uop which gives 7-bit opcode, not func3 *)
+                       None
+                   | "BTYPE" ->
+                       (* BTYPE uses encdec_bop which gives 3-bit func3 *)
+                       resolve_helper_mapping "encdec_bop" enum_value_id
+                   | "ITYPE" ->
+                       (* ITYPE uses encdec_iop which gives 3-bit func3 *)
+                       resolve_helper_mapping "encdec_iop" enum_value_id
+                   | "STORE" ->
+                       (* STORE might use encdec_sop *)
+                       resolve_helper_mapping "encdec_sop" enum_value_id
+                   | "SHIFTIOP" ->
+                       (* SHIFTIOP uses encdec_sop which gives 3-bit func3 *)
+                       resolve_helper_mapping "encdec_sop" enum_value_id
+                   | _ -> None
+                 else func3_opt
+               in
+               
+               let resolved_opcode_opt =
+                 (* If opcode is missing, try to resolve from helper mapping *)
+                 if opcode_opt = None then
+                   match constructor_name with
+                   | "UTYPE" ->
+                       (* UTYPE uses encdec_uop which gives 7-bit opcode *)
+                       resolve_helper_mapping "encdec_uop" enum_value_id
+                   | _ -> opcode_opt
+                 else opcode_opt
+               in
+               
+               let bit_pattern = if pattern_parts = [] then "TODO" 
+                                else String.concat " " pattern_parts in
+               let computed_value = compute_opcode_value (func7_opt, resolved_func3_opt, resolved_opcode_opt) constructor_name in
+               
+               (* Extract func7, func3, opcode as strings *)
+               let func7_str = match func7_opt with
+                 | Some v -> Some (int_to_binary_string v 7)
+                 | None -> None
+               in
+               let func3_str = match resolved_func3_opt with
+                 | Some v -> Some (int_to_binary_string v 3)
+                 | None -> None
+               in
+               let opcode_str = match resolved_opcode_opt with
+                 | Some v -> Some (int_to_binary_string v 7)
+                 | None -> None
+               in
+               
+               Some { oi_constructor = constructor_id; 
+                      oi_enum_value = enum_value_id; 
+                      oi_bit_pattern = bit_pattern;
+                      oi_func7 = func7_str;
+                      oi_func3 = func3_str;
+                      oi_opcode = opcode_str;
+                      oi_computed_value = computed_value }
+           | None -> None)
+      | _ -> None
+    in
+    
+    (* Extract all opcodes from encdec mapping *)
+    let extracted_opcodes = match encdec_mapping with
+      | Some info ->
+          let opcodes = List.filter_map parse_encdec_clause info.mi_clauses in
+          (* Debug: print extracted opcodes *)
+          Printf.eprintf "Extracted %d opcodes from encdec mapping\n" (List.length opcodes);
+          List.iter (fun opc ->
+            Printf.eprintf "  %s.%s -> %s\n" 
+              (string_of_id opc.oi_constructor)
+              (string_of_id opc.oi_enum_value)
+              opc.oi_bit_pattern
+          ) opcodes;
+          opcodes
+      | None -> []
+    in
+    
+    (* Parse mnemonic mappings (e.g., rtype_mnemonic, utype_mnemonic) *)
+    let parse_mnemonic_clause (mapcl : 'b mapcl) : mnemonic_info option =
+      match mapcl with
+      | MCL_aux (MCL_bidir (left_mpexp, right_mpexp), _) ->
+          (* Left: enum value (e.g., ADD), Right: string literal (e.g., "add") *)
+          let extract_enum = function
+            | MPat_aux (MPat_pat (MP_aux (MP_id enum_id, _)), _) -> Some enum_id
+            | _ -> None
+          in
+          let extract_string = function
+            | MPat_aux (MPat_pat (MP_aux (MP_lit (L_aux (L_string s, _)), _)), _) -> Some s
+            | _ -> None
+          in
+          (match (extract_enum left_mpexp, extract_string right_mpexp) with
+           | (Some enum_id, Some mnemonic) ->
+               Some { mi_enum_value = enum_id; mi_mnemonic = mnemonic }
+           | _ -> None)
+      | _ -> None
+    in
+    
+    let parse_mnemonic_mapping (map_id : id) (info : 'b mapping_info) : (id * mnemonic_info list) option =
+      (* Check if this is a mnemonic mapping (ends with _mnemonic) *)
+      let map_name = string_of_id map_id in
+      let suffix = "_mnemonic" in
+      let suffix_len = String.length suffix in
+      let name_len = String.length map_name in
+      if name_len < suffix_len then None
+      else if String.sub map_name (name_len - suffix_len) suffix_len <> suffix then None
+      else
+        let mnemonics = List.filter_map parse_mnemonic_clause info.mi_clauses in
+        if mnemonics = [] then None else Some (map_id, mnemonics)
+    in
+    
+    (* Extract all mnemonic mappings *)
+    let extracted_mnemonics = 
+      let mnemonics = IdMap.fold (fun map_id info acc ->
+        match parse_mnemonic_mapping map_id info with
+        | Some (id, mnemonics) -> (id, mnemonics) :: acc
+        | None -> acc
+      ) mapping_info [] in
+      (* Debug: print extracted mnemonics *)
+      Printf.eprintf "Extracted %d mnemonic mappings\n" (List.length mnemonics);
+      List.iter (fun (map_id, mnemonics_list) ->
+        Printf.eprintf "  %s: %d entries\n" (string_of_id map_id) (List.length mnemonics_list);
+        List.iter (fun m ->
+          Printf.eprintf "    %s -> \"%s\"\n" (string_of_id m.mi_enum_value) m.mi_mnemonic
+        ) mnemonics_list
+      ) mnemonics;
+      mnemonics
+    in
+    
+    (* Parse assembly mappings - these are typically "mapping clause assembly = ..." *)
+    (* For now, we'll extract them but use mnemonic mappings for assembly syntax *)
+    (* Assembly mappings are more complex as they contain formatted strings *)
+    (* We can enhance this later to parse the actual assembly format strings *)
+    
+    (* Helper: Extract enum type from union clause arguments (typically the last arg) *)
+    let extract_enum_type_from_clause (clause : union_clause_info) =
+      match clause.uc_args with
+      | [] -> None
+      | args -> 
+          (* The enum is typically the last argument *)
+          let last_arg = List.nth args (List.length args - 1) in
+          match last_arg with
+          | Typ_aux (Typ_id enum_id, _) -> Some enum_id
+          | _ -> None
+    in
+    
+    (* Find the "ast" union type to identify instruction families *)
+    let ast_union_id = mk_id "ast" in
+    let ast_clauses = match IdMap.find_opt ast_union_id union_info with
+      | Some clauses -> clauses
       | None -> []
     in
 
     (***************************************************************************************************************)
+    (* Convert JIB CDEF to CodAL string representation *)
+    (* Note: Instruction elements are now generated by generate_instruction_elements() from union clauses *)
+    (* This function only handles non-instruction CDEFs (values, types, registers, etc.) *)
     let codal_cdef = function
-      | CDEF_fundef (id, _return_id_opt, args, instrs) ->
+      | CDEF_fundef (id, _return_id_opt, _args, _instrs) ->
+          (* Instruction functions are now handled by generate_instruction_elements() *)
+          (* Skip them here to avoid duplicate generation *)
           let func_name = string_of_id id in
-          
-          (* Special handling for execute function - generate i_rtype_alu with switch *)
-          let result = if func_name = "execute" && rop_values <> [] then begin
-            (* Build switch cases directly from rop enum values *)
-            let switch_cases = List.map (fun op_name ->
-              let op_upper = String.uppercase_ascii op_name in
-              let operation = generate_operation op_name in
-              Printf.sprintf "            case RTYPE_%s:\n                %s\n                break;" 
-                op_upper operation
-            ) rop_values in
-            
-            let switch_body = String.concat "\n" switch_cases ^ 
-              "\n            default:\n                result = 0;\n                break;" in
-            
-            Printf.sprintf "element i_rtype_alu\n{\n    use opc_rtype_alu as opc;\n    use xpr_all as rs1, rs2, rd;\n\n    assembly { opc rd \",\" rs1 \",\" rs2};\n    binary { FUNC7(opc) rs2 rs1 FUNC3(opc) rd OPCODE(opc) };\n\n    semantics\n    {\n        uint32 src1, src2, result;\n\n        src1 = rf_xpr_read(rs1);\n        src2 = rf_xpr_read(rs2);\n\n        switch (opc)\n        {\n%s\n        }\n\n        rf_xpr_write(result, rd);\n    };\n};" switch_body
-          end else begin
-            let instr_type = classify_instruction func_name args in
-            
-            (* Generate Codal instruction element following RISC-V pattern *)
-            match instr_type with
-          | RType (rd, rs1, rs2) ->
-              Printf.sprintf "element i_%s\n{\n  use xpr_all as %s, %s, %s;\n  \n  assembly { \"%s\" %s, %s, %s };\n  \n  binary { FUNC7_%s %s %s FUNC3_%s %s OPCODE_%s };\n  \n  semantics\n  {\n    uint32 src1, src2, result;\n    \n    src1 = rf_xpr_read(%s);\n    src2 = rf_xpr_read(%s);\n    \n    result = %s;\n    \n    rf_xpr_write(result, %s);\n  };\n};" 
-                func_name
-                (string_of_name rs1) (string_of_name rs2) (string_of_name rd)
-                func_name (string_of_name rd) (string_of_name rs1) (string_of_name rs2)
-                (String.uppercase_ascii func_name) (string_of_name rs2) (string_of_name rs1) (String.uppercase_ascii func_name) (string_of_name rd) (String.uppercase_ascii func_name)
-                (string_of_name rs1) (string_of_name rs2)
-                (generate_operation func_name)
-                (string_of_name rd)
-                
-          | IType (rd, rs1, imm) ->
-              Printf.sprintf "element i_%s\n{\n  use xpr_all as %s, %s;\n  use simm12 as %s;\n  \n  assembly { \"%s\" %s, %s, %s };\n  \n  binary { %s %s FUNC3_%s %s OPCODE_%s };\n  \n  semantics\n  {\n    uint32 src1, result;\n    int32 immediate;\n    \n    src1 = rf_xpr_read(%s);\n    immediate = (int32) %s;\n    \n    result = %s;\n    \n    rf_xpr_write(result, %s);\n  };\n};" 
-                func_name
-                (string_of_name rs1) (string_of_name rd) (string_of_name imm)
-                func_name (string_of_name rd) (string_of_name rs1) (string_of_name imm)
-                (string_of_name imm) (string_of_name rs1) (String.uppercase_ascii func_name) (string_of_name rd) (String.uppercase_ascii func_name)
-                (string_of_name rs1) (string_of_name imm)
-                (generate_itype_operation func_name)
-                (string_of_name rd)
-                
-          | BType (rs1, rs2, imm) ->
-              Printf.sprintf "element i_%s\n{\n  use xpr_all as %s, %s;\n  use relative_addr12 as %s;\n  \n  assembly { \"%s\" %s, %s, %s };\n  \n  binary { %s[11..11] %s[9..4] %s %s FUNC3_%s %s[3..0] %s[10..10] OPCODE_%s };\n  \n  semantics\n  {\n    uint32 src1, src2, target_address;\n    uint32 result;\n    \n    src1 = rf_xpr_read(%s);\n    src2 = rf_xpr_read(%s);\n    \n    result = %s;\n    \n    if (result) {\n      target_address = r_pc + (int32)%s - RISCV_INSTR_SIZE;\n      write_pc(target_address);\n    }\n  };\n};" 
-                func_name
-                (string_of_name rs1) (string_of_name rs2) (string_of_name imm)
-                func_name (string_of_name rs1) (string_of_name rs2) (string_of_name imm)
-                (string_of_name imm) (string_of_name imm) (string_of_name rs2) (string_of_name rs1) (String.uppercase_ascii func_name) (string_of_name imm) (string_of_name imm) (String.uppercase_ascii func_name)
-                (string_of_name rs1) (string_of_name rs2)
-                (generate_btype_condition func_name)
-                (string_of_name imm)
-                
-          | JType (rd, imm) ->
-              Printf.sprintf "element i_%s\n{\n  use xpr_all as %s;\n  use relative_addr20 as %s;\n  \n  assembly { \"%s\" %s, %s };\n  \n  binary { %s[19..19] %s[9..0] %s[10..10] %s[18..11] %s OPCODE_%s };\n  \n  semantics\n  {\n    uint32 target_address, current_pc;\n    \n    current_pc = read_pc();\n    rf_xpr_write(current_pc, %s);\n    target_address = current_pc + %s - RISCV_INSTR_SIZE;\n    write_pc(target_address);\n  };\n};" 
-                func_name
-                (string_of_name rd) (string_of_name imm)
-                func_name (string_of_name rd) (string_of_name imm)
-                (string_of_name imm) (string_of_name imm) (string_of_name imm) (string_of_name imm) (string_of_name rd) (String.uppercase_ascii func_name)
-                (string_of_name rd) (string_of_name imm)
-                
-          | UType (rd, imm) ->
-              Printf.sprintf "element i_%s\n{\n  use xpr_all as %s;\n  use uimm20 as %s;\n  \n  assembly { \"%s\" %s, %s };\n  \n  binary { %s %s OPCODE_%s };\n  \n  semantics\n  {\n    uint32 result;\n    \n    result = %s;\n    \n    rf_xpr_write(result, %s);\n  };\n};" 
-                func_name
-                (string_of_name rd) (string_of_name imm)
-                func_name (string_of_name rd) (string_of_name imm)
-                (string_of_name imm) (string_of_name rd) (String.uppercase_ascii func_name)
-                (generate_utype_operation func_name)
-                (string_of_name rd)
-                
-          | LoadType (rd, rs1, imm) ->
-              Printf.sprintf "element i_%s\n{\n  use xpr_all as %s, %s;\n  use simm12 as %s;\n  \n  assembly { \"%s\" %s, %s(%s) };\n  \n  binary { %s %s FUNC3_%s %s OPCODE_%s };\n  \n  semantics\n  {\n    uint32 address, result;\n    \n    address = rf_xpr_read(%s) + (int32) %s;\n    result = load(opc, address);\n    rf_xpr_write(result, %s);\n  };\n};" 
-                func_name
-                (string_of_name rs1) (string_of_name rd) (string_of_name imm)
-                func_name (string_of_name rd) (string_of_name imm) (string_of_name rs1)
-                (string_of_name imm) (string_of_name rs1) (String.uppercase_ascii func_name) (string_of_name rd) (String.uppercase_ascii func_name)
-                (string_of_name rs1) (string_of_name imm)
-                (string_of_name rd)
-                
-          | StoreType (rs1, rs2, imm) ->
-              Printf.sprintf "element i_%s\n{\n  use xpr_all as %s, %s;\n  use simm12 as %s;\n  \n  assembly { \"%s\" %s, %s(%s) };\n  \n  binary { %s[11..5] %s %s FUNC3_%s %s[4..0] OPCODE_%s };\n  \n  semantics\n  {\n    uint32 address, data;\n    \n    address = rf_xpr_read(%s) + (int32) %s;\n    data = rf_xpr_read(%s);\n    store(opc, address, data);\n  };\n};" 
-                func_name
-                (string_of_name rs1) (string_of_name rs2) (string_of_name imm)
-                func_name (string_of_name rs2) (string_of_name imm) (string_of_name rs1)
-                (string_of_name imm) (string_of_name rs2) (string_of_name rs1) (String.uppercase_ascii func_name) (string_of_name imm) (String.uppercase_ascii func_name)
-                (string_of_name rs1) (string_of_name imm) (string_of_name rs2)
-                
-          | Other ->
-              (* Fallback for other instruction types *)
-          let args_str = String.concat ", " (List.map string_of_name args) in
-              Printf.sprintf "element %s\n{\n  use xpr_all as %s;\n  \n  assembly { \"%s\" %s };\n  \n  binary { %s };\n  \n  semantics\n  {\n    %s\n  };\n};" 
-                func_name
-                (String.concat ", " (List.map string_of_name args))
-                func_name
-                args_str
-                (generate_binary_encoding func_name args)
-                (generate_semantics func_name args instrs)
-          end
-          in
-          result
+          if func_name = "execute" then
+            ""  (* execute function is handled by generate_instruction_elements() *)
+          else
+            ""  (* Other instruction functions are also handled by generate_instruction_elements() *)
             
       | CDEF_val (id, _tyvars, ctyps, ctyp, extern) ->
           let val_name = string_of_id id in
@@ -781,23 +936,560 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     
 
  (*+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*)   
-    (* Generate DEF_OPC definitions from rop enum values *)
-    let generate_def_opc_calls () =
-      if rop_values = [] then ""
-      else
-        let opc_defs = List.map (fun op_name ->
-          let op_lower = String.lowercase_ascii op_name in
-          Printf.sprintf "DEF_OPC(%s, \"%s\", RTYPE_%s)" op_lower op_lower (String.uppercase_ascii op_name)
-        ) rop_values in
-        String.concat "\n" opc_defs
+    (* Helper: Find mnemonic for an enum value in a specific family *)
+    let find_mnemonic_for_enum constructor_name enum_value_id =
+      (* Look for mnemonic mapping like rtype_mnemonic, utype_mnemonic, etc. *)
+      let expected_mapping_name = (String.lowercase_ascii constructor_name) ^ "_mnemonic" in
+      match List.find_opt (fun (map_id, _) -> 
+        string_of_id map_id = expected_mapping_name
+      ) extracted_mnemonics with
+      | Some (_, mnemonics) ->
+          (match List.find_opt (fun m -> Id.compare m.mi_enum_value enum_value_id = 0) mnemonics with
+           | Some m -> Some m.mi_mnemonic
+           | None -> None)
+      | None -> None
     in
     
-    (* Generate opcode set from rop enum values *)
+    (* Generate DEF_OPC calls for all instruction families *)
+    let generate_def_opc_calls_for_family clause =
+      match extract_enum_type_from_clause clause with
+      | Some enum_id ->
+          let enum_values = match IdMap.find_opt enum_id enum_info with
+            | Some ids -> ids
+            | None -> []
+          in
+          if enum_values = [] then ""
+          else
+            let constructor_name = string_of_id clause.uc_constructor in
+            let family_prefix = String.uppercase_ascii constructor_name in
+            let opc_defs = List.map (fun enum_value_id ->
+              let op_name = string_of_id enum_value_id in
+          let op_lower = String.lowercase_ascii op_name in
+              (* Look up mnemonic from extracted mappings, fallback to lowercase enum name *)
+              let mnemonic = match find_mnemonic_for_enum constructor_name enum_value_id with
+                | Some m -> m
+                | None -> op_lower
+              in
+              Printf.sprintf "DEF_OPC(%s, \"%s\", %s_%s)" 
+                op_lower mnemonic family_prefix (String.uppercase_ascii op_name)
+            ) enum_values in
+        String.concat "\n" opc_defs
+      | None -> ""
+    in
+    
+    let generate_def_opc_calls () =
+      let all_defs = List.map generate_def_opc_calls_for_family ast_clauses in
+      let non_empty = List.filter (fun s -> s <> "") all_defs in
+      String.concat "\n" non_empty
+    in
+    
+    (* Generate opcode sets for all instruction families *)
+    let generate_opc_set_for_family clause =
+      match extract_enum_type_from_clause clause with
+      | Some enum_id ->
+          let enum_values = match IdMap.find_opt enum_id enum_info with
+            | Some ids -> List.map string_of_id ids
+            | None -> []
+          in
+          if enum_values = [] then ""
+          else
+            let constructor_name = string_of_id clause.uc_constructor in
+            let constructor_lower = String.lowercase_ascii constructor_name in
+            let opc_names = List.map (fun op -> "opc_" ^ String.lowercase_ascii op) enum_values in
+            Printf.sprintf "set opc_%s = %s;" constructor_lower (String.concat ", " opc_names)
+      | None -> ""
+    in
+    
     let generate_opc_set () =
-      if rop_values = [] then ""
+      let all_sets = List.map generate_opc_set_for_family ast_clauses in
+      let non_empty = List.filter (fun s -> s <> "") all_sets in
+      String.concat "\n" non_empty
+    in
+    
+    (* Helper: Determine operand names and types from union clause arguments *)
+    let determine_operands (clause : union_clause_info) : (string * string) list =
+      let constructor_name = string_of_id clause.uc_constructor in
+      (* Filter out the enum type (last argument) and other non-operand types *)
+      let args_without_enum = match clause.uc_args with
+        | [] -> []
+        | args -> 
+            (* Remove last arg (enum type) *)
+            let len = List.length args in
+            if len > 0 then
+              List.rev (List.tl (List.rev args))
+            else []
+      in
+      
+      (* Separate immediates from registers *)
+      let _immediates = List.filter_map (fun (idx, typ) ->
+        match typ with
+        | Typ_aux (Typ_app (id, [A_aux (A_nexp _, _)]), _) when string_of_id id = "bits" ->
+            Some (idx, typ)
+        | _ -> None
+      ) (List.mapi (fun i t -> (i, t)) args_without_enum) in
+      
+      let registers = List.filter_map (fun (idx, typ) ->
+        match typ with
+        | Typ_aux (Typ_id id, _) when string_of_id id = "regidx" ->
+            Some (idx, typ)
+        | _ -> None
+      ) (List.mapi (fun i t -> (i, t)) args_without_enum) in
+      
+      (* Helper: find index in a list *)
+      let find_index pred lst =
+        let rec find i = function
+          | [] -> None
+          | x :: xs -> if pred x then Some i else find (i + 1) xs
+        in
+        find 0 lst
+      in
+      
+      (* Classify each argument by type and position *)
+      let classify_arg idx typ =
+        match typ with
+        | Typ_aux (Typ_id id, _) ->
+            let type_name = string_of_id id in
+            if type_name = "regidx" then
+              (* Register operand - find position among registers only *)
+              let reg_pos = find_index (fun (i, _) -> i = idx) registers in
+              (match (constructor_name, reg_pos) with
+               | ("RTYPE", Some 0) -> ("rs2", "xpr_all")
+               | ("RTYPE", Some 1) -> ("rs1", "xpr_all")
+               | ("RTYPE", Some 2) -> ("rd", "xpr_all")
+               | ("BTYPE", Some 0) -> ("rs2", "xpr_all")
+               | ("BTYPE", Some 1) -> ("rs1", "xpr_all")
+               | ("STORE", Some 0) -> ("rs2", "xpr_all")
+               | ("STORE", Some 1) -> ("rs1", "xpr_all")
+               | ("JALR", Some 0) -> ("rs1", "xpr_all")
+               | ("JALR", Some 1) -> ("rd", "xpr_all")
+               | ("LOAD", Some 0) -> ("rs1", "xpr_all")
+               | ("LOAD", Some 1) -> ("rd", "xpr_all")
+               | ("ITYPE", Some 0) -> ("rs1", "xpr_all")
+               | ("ITYPE", Some 1) -> ("rd", "xpr_all")
+               | ("UTYPE", Some 0) | ("JAL", Some 0) -> ("rd", "xpr_all")
+               | (_, Some 0) -> ("rd", "xpr_all")
+               | (_, Some 1) -> ("rs1", "xpr_all")
+               | (_, Some 2) -> ("rs2", "xpr_all")
+               | _ -> ("reg" ^ string_of_int idx, "xpr_all"))
+            else
+              ("arg" ^ string_of_int idx, "xpr_all")
+        | Typ_aux (Typ_app (id, [A_aux (A_nexp _, _)]), _) ->
+            let type_name = string_of_id id in
+            if type_name = "bits" then
+              (* Immediate operand - determine type based on bit width and instruction type *)
+              (match constructor_name with
+               | "UTYPE" | "JAL" -> ("imm", "uimm20")
+               | "BTYPE" -> ("imm", "relative_addr12")
+               | "JALR" | "ITYPE" | "STORE" | "LOAD" -> ("imm", "simm12")
+               | "SHIFTIOP" -> ("shamt", "uimm5")
+               | _ -> ("imm", "simm12"))
+            else
+              ("arg" ^ string_of_int idx, "xpr_all")
+        | _ -> ("arg" ^ string_of_int idx, "xpr_all")
+      in
+      
+      List.mapi classify_arg args_without_enum
+    in
+    
+    (* Generate instruction element for a family *)
+    let generate_instruction_element (clause : union_clause_info) : string =
+      let constructor_name = string_of_id clause.uc_constructor in
+      let constructor_lower = String.lowercase_ascii constructor_name in
+      
+      (* Get enum values for this family *)
+      let enum_values = match extract_enum_type_from_clause clause with
+        | Some enum_id ->
+            (match IdMap.find_opt enum_id enum_info with
+             | Some ids -> ids
+             | None -> [])
+        | None -> []
+      in
+      
+      if enum_values = [] then ""
       else
-        let opc_names = List.map (fun op -> "opc_" ^ String.lowercase_ascii op) rop_values in
-        Printf.sprintf "set opc_rtype_alu = %s;" (String.concat ", " opc_names)
+        (* Determine operands *)
+        let operands = determine_operands clause in
+        let use_decls = List.map (fun (name, _) -> name) operands in
+        let _use_types = List.map (fun (_, codal_type) -> codal_type) operands in
+        
+        (* Group operands by type for use declarations *)
+        let register_ops = List.filter_map (fun (name, typ) ->
+          if typ = "xpr_all" then Some name else None
+        ) operands in
+        let immediate_ops = List.filter_map (fun (name, typ) ->
+          if typ <> "xpr_all" then Some (name, typ) else None
+        ) operands in
+        
+        (* Generate use declarations *)
+        let use_regs = if register_ops = [] then ""
+                      else "    use xpr_all as " ^ (String.concat ", " register_ops) ^ ";\n" in
+        let use_imms = String.concat "" (List.map (fun (name, typ) ->
+          Printf.sprintf "    use %s as %s;\n" typ name
+        ) immediate_ops) in
+        
+        (* Generate assembly syntax - use mnemonic with operands *)
+        (* Reorder operands to match assembly syntax conventions *)
+        let assembly_syntax = 
+          let mnemonic_var = if enum_values <> [] then "opc" else "\"unknown\"" in
+          let operand_str = 
+            if constructor_name = "RTYPE" && List.length use_decls >= 3 then
+              (* RTYPE: opc rd, rs1, rs2 (operands stored as rs2, rs1, rd) *)
+              let rd = List.nth use_decls 2 in
+              let rs1 = List.nth use_decls 1 in
+              let rs2 = List.nth use_decls 0 in
+              Printf.sprintf "%s \",\" %s \",\" %s" rd rs1 rs2
+            else if constructor_name = "BTYPE" && List.length use_decls >= 3 then
+              (* BTYPE: opc rs1, rs2, imm (operands stored as imm, rs2, rs1) *)
+              let imm = List.nth use_decls 0 in
+              let rs2 = List.nth use_decls 1 in
+              let rs1 = List.nth use_decls 2 in
+              Printf.sprintf "%s \",\" %s \",\" %s" rs1 rs2 imm
+            else if constructor_name = "STORE" && List.length use_decls >= 3 then
+              (* STORE: opc rs2, imm(rs1) (operands stored as imm, rs2, rs1) *)
+              let imm = List.nth use_decls 0 in
+              let rs2 = List.nth use_decls 1 in
+              let rs1 = List.nth use_decls 2 in
+              Printf.sprintf "%s \",\" %s \"(\" %s \")\"" rs2 imm rs1
+            else if constructor_name = "LOAD" && List.length use_decls >= 3 then
+              (* LOAD: opc rd, imm(rs1) (operands stored as imm, rs1, rd) *)
+              let imm = List.nth use_decls 0 in
+              let rs1 = List.nth use_decls 1 in
+              let rd = List.nth use_decls 2 in
+              Printf.sprintf "%s \",\" %s \"(\" %s \")\"" rd imm rs1
+            else if constructor_name = "JALR" && List.length use_decls >= 3 then
+              (* JALR: opc rd, imm(rs1) (operands stored as imm, rs1, rd) *)
+              let imm = List.nth use_decls 0 in
+              let rs1 = List.nth use_decls 1 in
+              let rd = List.nth use_decls 2 in
+              Printf.sprintf "%s \",\" %s \"(\" %s \")\"" rd imm rs1
+            else
+              String.concat " \",\" " use_decls
+          in
+          Printf.sprintf "    assembly { %s %s };" mnemonic_var operand_str
+        in
+        
+        (* Helper: Find opcode pattern for a specific enum value *)
+        let find_opcode_pattern enum_value_id =
+          List.find_opt (fun opc ->
+            Id.compare opc.oi_constructor clause.uc_constructor = 0 &&
+            Id.compare opc.oi_enum_value enum_value_id = 0
+          ) extracted_opcodes
+        in
+        
+        (* Generate binary encoding based on instruction family *)
+        let binary_encoding = 
+          (* For RTYPE: FUNC7(opc) rs2 rs1 FUNC3(opc) rd OPCODE(opc) *)
+          if constructor_name = "RTYPE" && List.length register_ops >= 3 then
+            let rs2 = List.nth register_ops 0 in
+            let rs1 = List.nth register_ops 1 in
+            let rd = List.nth register_ops 2 in
+            Printf.sprintf "    binary { FUNC7(opc) %s %s FUNC3(opc) %s OPCODE(opc) };" rs2 rs1 rd
+          (* For ITYPE: imm rs1 FUNC3(opc) rd OPCODE(opc) *)
+          else if constructor_name = "ITYPE" && List.length register_ops >= 2 && List.length immediate_ops >= 1 then
+            let imm_name = fst (List.hd immediate_ops) in
+            let rs1 = List.nth register_ops 0 in
+            let rd = List.nth register_ops 1 in
+            Printf.sprintf "    binary { %s %s FUNC3(opc) %s OPCODE(opc) };" imm_name rs1 rd
+          (* For STORE: imm[11..5] rs2 rs1 FUNC3(opc) imm[4..0] OPCODE(opc) *)
+          (* STORE has (imm, rs2, rs1) in operands *)
+          else if constructor_name = "STORE" && List.length register_ops >= 2 && List.length immediate_ops >= 1 then
+            let imm_name = fst (List.hd immediate_ops) in
+            let rs2 = List.nth register_ops 0 in  (* First register is rs2 *)
+            let rs1 = List.nth register_ops 1 in  (* Second register is rs1 *)
+            Printf.sprintf "    binary { %s[11..5] %s %s FUNC3(opc) %s[4..0] OPCODE(opc) };" imm_name rs2 rs1 imm_name
+          (* For BTYPE: imm[11] imm[9..4] rs2 rs1 FUNC3(opc) imm[3..0] imm[10] OPCODE(opc) *)
+          (* BTYPE has (imm, rs2, rs1) in operands *)
+          else if constructor_name = "BTYPE" && List.length register_ops >= 2 && List.length immediate_ops >= 1 then
+            let imm_name = fst (List.hd immediate_ops) in
+            let rs2 = List.nth register_ops 0 in  (* First register is rs2 *)
+            let rs1 = List.nth register_ops 1 in  (* Second register is rs1 *)
+            Printf.sprintf "    binary { %s[11..11] %s[9..4] %s %s FUNC3(opc) %s[3..0] %s[10..10] OPCODE(opc) };" 
+              imm_name imm_name rs2 rs1 imm_name imm_name
+          (* For UTYPE: imm rd OPCODE(opc) *)
+          else if constructor_name = "UTYPE" && List.length register_ops >= 1 && List.length immediate_ops >= 1 then
+            let imm_name = fst (List.hd immediate_ops) in
+            let rd = List.nth register_ops 0 in
+            Printf.sprintf "    binary { %s %s OPCODE(opc) };" imm_name rd
+          (* For JTYPE: imm[19] imm[9..0] imm[10] imm[18..11] rd OPCODE(opc) *)
+          else if constructor_name = "JAL" && List.length register_ops >= 1 && List.length immediate_ops >= 1 then
+            let imm_name = fst (List.hd immediate_ops) in
+            let rd = List.nth register_ops 0 in
+            Printf.sprintf "    binary { %s[19..19] %s[9..0] %s[10..10] %s[18..11] %s OPCODE(opc) };" 
+              imm_name imm_name imm_name imm_name rd
+          (* For SHIFTIOP: FUNC7(opc) shamt rs1 FUNC3(opc) rd OPCODE(opc) *)
+          else if constructor_name = "SHIFTIOP" && List.length register_ops >= 2 && List.length immediate_ops >= 1 then
+            let shamt_name = fst (List.hd immediate_ops) in
+            let rs1 = List.nth register_ops 0 in
+            let rd = List.nth register_ops 1 in
+            Printf.sprintf "    binary { FUNC7(opc) %s %s FUNC3(opc) %s OPCODE(opc) };" shamt_name rs1 rd
+          (* Default: try to use extracted pattern or generate generic *)
+          else
+            (* Try to find a pattern from extracted opcodes *)
+            match enum_values with
+            | enum_value_id :: _ ->
+                (match find_opcode_pattern enum_value_id with
+                 | Some opc_info ->
+                     if opc_info.oi_bit_pattern <> "TODO" then
+                       Printf.sprintf "    binary { /* %s */ };" opc_info.oi_bit_pattern
+                     else
+                       Printf.sprintf "    binary { /* TODO: generate from encdec pattern for %s */ };" constructor_name
+                 | None ->
+                     Printf.sprintf "    binary { /* TODO: generate from encdec pattern for %s */ };" constructor_name)
+            | [] ->
+                Printf.sprintf "    binary { /* TODO: generate from encdec pattern for %s */ };" constructor_name
+        in
+        
+        (* Generate semantics switch statement *)
+        (* Replace src1/src2 with actual variable names based on instruction type *)
+        let switch_cases = List.map (fun enum_value_id ->
+          let op_name = string_of_id enum_value_id in
+          let op_upper = String.uppercase_ascii op_name in
+          let family_prefix = String.uppercase_ascii constructor_name in
+          let operation = 
+            if constructor_name = "RTYPE" && List.length register_ops >= 3 then
+              (* Use actual variable names for RTYPE: rs1_val and rs2_val *)
+              let rs1_var = (List.nth register_ops 1) ^ "_val" in
+              let rs2_var = (List.nth register_ops 0) ^ "_val" in
+              let op_str = generate_operation op_name in
+              (* Replace src1 and src2 *)
+              let op_str = 
+                let len = String.length op_str in
+                let buf = Buffer.create len in
+                let rec replace i =
+                  if i >= len then Buffer.contents buf
+                  else if i + 4 <= len && String.sub op_str i 4 = "src1" then (
+                    Buffer.add_string buf rs1_var;
+                    replace (i + 4)
+                  )
+                  else if i + 4 <= len && String.sub op_str i 4 = "src2" then (
+                    Buffer.add_string buf rs2_var;
+                    replace (i + 4)
+                  )
+                  else (
+                    Buffer.add_char buf op_str.[i];
+                    replace (i + 1)
+                  )
+                in
+                replace 0
+              in
+              op_str
+            else if constructor_name = "BTYPE" && List.length register_ops >= 2 then
+              (* Use actual variable names for BTYPE: rs1_val and rs2_val *)
+              let rs1_var = (List.nth register_ops 1) ^ "_val" in
+              let rs2_var = (List.nth register_ops 0) ^ "_val" in
+              let op_str = generate_btype_condition op_name in
+              (* Replace src1 and src2 *)
+              let op_str = 
+                let len = String.length op_str in
+                let buf = Buffer.create len in
+                let rec replace i =
+                  if i >= len then Buffer.contents buf
+                  else if i + 4 <= len && String.sub op_str i 4 = "src1" then (
+                    Buffer.add_string buf rs1_var;
+                    replace (i + 4)
+                  )
+                  else if i + 4 <= len && String.sub op_str i 4 = "src2" then (
+                    Buffer.add_string buf rs2_var;
+                    replace (i + 4)
+                  )
+                  else (
+                    Buffer.add_char buf op_str.[i];
+                    replace (i + 1)
+                  )
+                in
+                replace 0
+              in
+              op_str
+            else if constructor_name = "ITYPE" && List.length register_ops >= 1 && List.length immediate_ops >= 1 then
+              (* Use actual variable names for ITYPE: rs1_val and immediate *)
+              let rs1_var = (List.nth register_ops 0) ^ "_val" in
+              let imm_name = fst (List.hd immediate_ops) in
+              let op_str = generate_itype_operation op_name in
+              (* Replace src1 and immediate *)
+              let op_str = 
+                let len = String.length op_str in
+                let buf = Buffer.create len in
+                let rec replace i =
+                  if i >= len then Buffer.contents buf
+                  else if i + 4 <= len && String.sub op_str i 4 = "src1" then (
+                    Buffer.add_string buf rs1_var;
+                    replace (i + 4)
+                  )
+                  else if i + 8 <= len && String.sub op_str i 8 = "immediate" then (
+                    Buffer.add_string buf imm_name;
+                    replace (i + 8)
+                  )
+                  else (
+                    Buffer.add_char buf op_str.[i];
+                    replace (i + 1)
+                  )
+                in
+                replace 0
+              in
+              op_str
+            else
+              generate_operation op_name
+          in
+          Printf.sprintf "            case %s_%s:\n                result = %s;\n                break;" 
+            family_prefix op_upper operation
+        ) enum_values in
+        
+        let switch_body = String.concat "\n" switch_cases ^ 
+          "\n            default:\n                result = 0;\n                break;" in
+        
+        (* Generate semantics section *)
+        let semantics_vars = 
+          if constructor_name = "BTYPE" then
+            (* BTYPE: needs rs1, rs2, result, target_address *)
+            if List.length register_ops >= 2 then
+              let rs1 = List.nth register_ops 1 in
+              let rs2 = List.nth register_ops 0 in
+              Printf.sprintf "        uint32 %s_val, %s_val, result;" rs1 rs2
+            else "        uint32 result;"
+          else if constructor_name = "STORE" then
+            (* STORE: needs address, data *)
+            "        uint32 address, data;"
+          else if constructor_name = "JAL" || constructor_name = "JALR" then
+            (* JAL/JALR: needs target_address, current_pc *)
+            "        uint32 target_address, current_pc;"
+          else if register_ops <> [] then
+            String.concat "\n        " (List.map (fun reg ->
+              Printf.sprintf "uint32 %s_val;" reg
+            ) register_ops) ^ "\n        uint32 result;"
+          else "        uint32 result;"
+        in
+        
+        let semantics_reads = 
+          if constructor_name = "BTYPE" && List.length register_ops >= 2 then
+            let rs1 = List.nth register_ops 1 in
+            let rs2 = List.nth register_ops 0 in
+            Printf.sprintf "        %s_val = rf_xpr_read(%s);\n        %s_val = rf_xpr_read(%s);" rs1 rs1 rs2 rs2
+          else if constructor_name = "STORE" then
+            "" (* Reads handled in writes section *)
+          else
+            String.concat "\n        " (List.map (fun reg ->
+              Printf.sprintf "%s_val = rf_xpr_read(%s);" reg reg
+            ) register_ops)
+        in
+        
+        let semantics_writes = 
+          if constructor_name = "BTYPE" then
+            (* BTYPE: conditional branch - update PC if condition is true *)
+            "        if (result) {\n            uint32 target_address = r_pc + (int32)imm - RISCV_INSTR_SIZE;\n            write_pc(target_address);\n        }"
+          else if constructor_name = "STORE" then
+            (* STORE: write to memory *)
+            (match (register_ops, immediate_ops) with
+             | (rs2 :: rs1 :: _, imm :: _) ->
+                 Printf.sprintf "        uint32 address = rf_xpr_read(%s) + (int32)%s;\n        uint32 data = rf_xpr_read(%s);\n        store(opc, address, data);" 
+                   rs1 (fst imm) rs2
+             | _ -> "")
+          else if constructor_name = "JAL" || constructor_name = "JALR" then
+            (* JAL/JALR: write return address to rd, update PC *)
+            (match register_ops with
+             | rd :: _ ->
+                 Printf.sprintf "        uint32 current_pc = read_pc();\n        rf_xpr_write(current_pc, %s);\n        uint32 target_address = current_pc + (int32)imm - RISCV_INSTR_SIZE;\n        write_pc(target_address);" rd
+             | _ -> "")
+          else if List.length register_ops > 0 then
+            (* For RTYPE, rd is the 3rd register (index 2), for others it's typically the last *)
+            let rd_idx = if constructor_name = "RTYPE" then 2 
+                        else if constructor_name = "ITYPE" || constructor_name = "LOAD" then (List.length register_ops - 1)
+                        else (List.length register_ops - 1) in
+            if rd_idx < List.length register_ops then
+              let rd = List.nth register_ops rd_idx in
+              Printf.sprintf "        rf_xpr_write(result, %s);" rd
+            else ""
+          else ""
+        in
+        
+        let semantics = 
+          let reads_section = if semantics_reads <> "" then 
+            "\n        // Read source operands\n" ^ semantics_reads ^ "\n"
+          else "\n" in
+          let writes_section = if semantics_writes <> "" then 
+            "\n" ^ semantics_writes ^ "\n"
+          else "\n" in
+          Printf.sprintf "    semantics\n    {\n%s%s        switch (opc)\n        {\n%s\n        }%s    };" 
+            semantics_vars reads_section switch_body writes_section
+        in
+        
+        (* Generate opc set name *)
+        let opc_set_name = "opc_" ^ constructor_lower in
+        
+        (* Put it all together *)
+        Printf.sprintf "element i_%s\n{\n    use %s as opc;\n%s%s\n    %s\n\n    %s\n\n%s\n};"
+          constructor_lower opc_set_name use_regs use_imms assembly_syntax binary_encoding semantics
+    in
+    
+    (* Generate instruction elements for all families *)
+    let generate_instruction_elements () =
+      let elements = List.map generate_instruction_element ast_clauses in
+      let non_empty = List.filter (fun s -> s <> "") elements in
+      String.concat "\n\n" non_empty
+    in
+    
+    (* Generate opcodes.hcodal file with enum definitions *)
+    let generate_opcodes_header () =
+      let header = 
+        "/**\n" ^
+        " * Generated opcodes header from Sail AST\n" ^
+        " */\n\n" ^
+        "#ifndef OPCODES_HCODAL_HG\n" ^
+        "#define OPCODES_HCODAL_HG\n\n"
+      in
+      
+      (* Group opcodes by constructor/family *)
+      Printf.eprintf "=== Generating opcodes header from %d extracted opcodes ===\n" (List.length extracted_opcodes);
+      let opcodes_by_family = 
+        let family_map = List.fold_left (fun acc opc ->
+          let family = string_of_id opc.oi_constructor in
+          let existing = try List.assoc family acc with Not_found -> [] in
+          (family, opc :: existing) :: (List.remove_assoc family acc)
+        ) [] extracted_opcodes in
+        family_map
+      in
+      
+      (* Generate enum for each family *)
+      let generate_enum_for_family (family_name, opcs) =
+        if opcs = [] then ""
+        else
+          let family_upper = String.uppercase_ascii family_name in
+          (* Determine enum type based on instruction family *)
+          let (enum_type, _enum_width) = 
+            match family_name with
+            | "RTYPE" | "SHIFTIOP" -> ("uint17", 17)
+            | "ITYPE" | "BTYPE" | "STORE" -> ("uint10", 10)
+            | "UTYPE" | "JAL" -> ("uint7", 7)
+            | _ -> ("uint10", 10)  (* Default *)
+          in
+          
+          let enum_name = family_upper ^ "_OPCODES" in
+          let enum_entries = List.map (fun opc ->
+            let op_name = string_of_id opc.oi_enum_value in
+            let op_upper = String.uppercase_ascii op_name in
+            let enum_entry_name = family_upper ^ "_" ^ op_upper in
+            (* Use computed value if available, otherwise use pattern *)
+            let value = match opc.oi_computed_value with
+              | Some v -> v
+              | None -> 
+                  (match opc.oi_opcode with
+                   | Some opc_val -> opc_val
+                   | None -> "0b0")
+            in
+            Printf.sprintf "    %s = %s" enum_entry_name value
+          ) opcs in
+          
+          Printf.sprintf "// %s Opcodes\n" family_name ^
+          Printf.sprintf "enum %s : %s {\n" enum_name enum_type ^
+          String.concat ",\n" enum_entries ^
+          "\n};\n"
+      in
+      
+      let enums = List.map generate_enum_for_family opcodes_by_family in
+      let non_empty_enums = List.filter (fun s -> s <> "") enums in
+      
+      header ^
+      String.concat "\n" non_empty_enums ^
+      "\n#endif\n"
     in
     
     (* Generate ops file content - basic helpers + relative addresses *)
@@ -832,6 +1524,25 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     (* Generate instruction elements from CDEF *)
     let codal_definitions = List.map codal_cdef cdefs in
     
+    (* Generate ISA set from all instruction families *)
+    let generate_isa_set () =
+      let element_names = List.filter_map (fun clause ->
+        let constructor_name = string_of_id clause.uc_constructor in
+        let enum_values = match extract_enum_type_from_clause clause with
+          | Some enum_id ->
+              (match IdMap.find_opt enum_id enum_info with
+               | Some ids -> if ids <> [] then Some ids else None
+               | None -> None)
+          | None -> None
+        in
+        match enum_values with
+        | Some _ -> Some ("i_" ^ String.lowercase_ascii constructor_name)
+        | None -> None
+      ) ast_clauses in
+      if element_names = [] then "set isa = i_rtype_alu;"
+      else "set isa = " ^ (String.concat ", " element_names) ^ ";"
+    in
+    
     (* Main codal file content - includes ops file, DEF_OPC calls, and instructions *)
     let main_file_content =
       "/* Generated Codal ISA from Sail AST */\n\n" ^
@@ -841,64 +1552,25 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
       "#include \"debug.hcodal\"\n" ^
       "#include \"isa_ops.codal\"\n\n" ^
       "/* Main ISA set */\n" ^
-      "set isa = i_rtype_alu;\n\n" ^
+      generate_isa_set () ^ "\n\n" ^
       "/* Start section */\n" ^
       "start\n{\n  roots = { isa };\n};\n\n" ^
-      "/* RISC-V opcode definitions from rop enum */\n" ^
+      "/* RISC-V opcode definitions from enum types */\n" ^
       generate_def_opc_calls () ^ "\n\n" ^
       generate_opc_set () ^ "\n\n" ^
+      "/* Instruction elements generated from Sail union clauses */\n" ^
+      generate_instruction_elements () ^ "\n\n" ^
+      "/* Additional definitions from JIB */\n" ^
       (String.concat "\n\n" codal_definitions)
     in
     
-    (* Return tuple (ops_content, main_content) *)
-    (ops_file_content, main_file_content)
+    (* Generate opcodes header *)
+    let opcodes_header_content = generate_opcodes_header () in
+    
+    (* Return tuple (ops_content, main_content, opcodes_header_content) *)
+    (ops_file_content, main_file_content, opcodes_header_content)
 
 
-  (* Generate binary encoding following RISC-V pattern, Are we using this? *)
-  let generate_binary_encoding func_name args =
-    match List.length args with
-    | 0 -> "OPCODE_" ^ (String.uppercase_ascii func_name)
-    | 1 -> "imm @ encdec_reg(" ^ (List.hd args |> string_of_name) ^ ") @ OPCODE_" ^ (String.uppercase_ascii func_name)
-    | 2 -> "imm @ encdec_reg(" ^ (List.nth args 0 |> string_of_name) ^ ") @ encdec_reg(" ^ (List.nth args 1 |> string_of_name) ^ ") @ OPCODE_" ^ (String.uppercase_ascii func_name)
-    | 3 -> "encdec_reg(" ^ (List.nth args 0 |> string_of_name) ^ ") @ encdec_reg(" ^ (List.nth args 1 |> string_of_name) ^ ") @ encdec_reg(" ^ (List.nth args 2 |> string_of_name) ^ ") @ OPCODE_" ^ (String.uppercase_ascii func_name)
-    | _ -> "/* Complex encoding */"
-
-  (* Generate semantics following RISC-V pattern,Are we using this? *)
-  let generate_semantics _func_name args instrs =
-    let arg_vars = List.mapi (fun i arg -> 
-      Printf.sprintf "    uint32 src%d = rf_xpr_read(%s);" (i+1) (string_of_name arg)
-    ) args in
-    
-    let operations = List.map (fun instr ->
-      match instr with
-      | I_aux (I_copy (clexp, cval), _) ->
-          let lval_str = match clexp with
-            | CL_id (id, _) -> string_of_name id
-            | _ -> "result"
-          in
-          let exp_str = match cval with
-            | V_call (op, _args) when string_of_op op = "add" ->
-                "src1 + src2"
-            | V_call (op, _args) when string_of_op op = "sub" ->
-                "src1 - src2"
-            | V_call (op, _args) when string_of_op op = "and" ->
-                "src1 & src2"
-            | V_call (op, _args) when string_of_op op = "or" ->
-                "src1 | src2"
-            | V_call (op, _args) when string_of_op op = "xor" ->
-                "src1 ^ src2"
-            | _ -> "/* Operation */"
-          in
-          Printf.sprintf "    %s = %s;" lval_str exp_str
-      | _ -> "    /* Instruction */"
-    ) instrs in
-    
-    let write_result = match args with
-      | [] -> ""
-      | _ -> "    rf_xpr_write(result, " ^ (List.hd args |> string_of_name) ^ ");"
-    in
-    
-    String.concat "\n" (arg_vars @ operations @ [write_result])
 
 
   (* Helper function to check if string starts with prefix *)
@@ -906,17 +1578,20 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     let len = String.length prefix in
     String.length str >= len && String.sub str 0 len = prefix
 
-  (* Helper function to check if a location is from mvp_addition.sail *)
+  (* Helper function to check if a location is from the target Sail file *)
+  (* Default to riscv_insts_base.sail, but can be configured *)
+  let target_sail_file = ref "riscv_insts_base.sail"
+  
   let is_from_main_sail_file loc =
     match Reporting.simp_loc loc with
     | Some (pos1, _pos2) ->
         let filename = pos1.Lexing.pos_fname in
         let basename = Filename.basename filename in
-        (* Check if the file is mvp_addition.sail, not riscv_types_minimal.sail or other included files *)
-        basename = "mvp_addition.sail"
+        (* Check if the file matches the target file *)
+        basename = !target_sail_file
     | None -> false
   
-  (* Filter function to keep only definitions from mvp_addition.sail (not included files) *)
+  (* Filter function to keep only definitions from the target Sail file (not included files) *)
   let filter_isa_definitions cdefs =
     let is_from_main_file_cdef = function
       | CDEF_aux (_, def_annot) -> is_from_main_sail_file def_annot.loc
@@ -924,8 +1599,11 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     
     let is_essential_type = function
       | CDEF_aux (CDEF_type (CTD_enum (id, _)), _) ->
-          (* Keep essential enums like rop *)
-          string_of_id id = "rop"
+          (* Keep essential enums used in instructions: rop, iop, bop, sop, uop *)
+          let enum_name = string_of_id id in
+          enum_name = "rop" || enum_name = "iop" || enum_name = "bop" || 
+          enum_name = "sop" || enum_name = "uop" || enum_name = "ropw" || 
+          enum_name = "sopw"
       | CDEF_aux (CDEF_type (CTD_variant (id, _, _)), _) ->
           (* Keep essential variants like ast *)
           string_of_id id = "ast"
@@ -972,8 +1650,7 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     *)
     let union_info = collect_union_clauses ast.defs in
     let enum_info = collect_enum_literals ast.defs in
-    ignore union_info;
-    ignore enum_info;
+    let mapping_info = collect_mappings ast.defs in
     let cdefs, _ = jib_of_ast env effects ast in
     
     (* Filter to keep only definitions from the main Sail file (not included files) *)
@@ -984,15 +1661,41 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
     (*So anonymous function which is used to strip the CDEF_aux from the cdef is applied to the filtered_cdefs list
     and the result is stored in cdef_aux_list list*)
     
-    let (ops_content, main_content) = jib_to_codal union_info enum_info cdef_aux_list in
+    let (ops_content, main_content, opcodes_header_content) = jib_to_codal union_info enum_info mapping_info cdef_aux_list in
+    
+    (* Determine output directory: try codal_plugin relative to current directory *)
+    (* This assumes we're running from sail-riscv/model and want files in codal_plugin/ *)
+    let output_dir = 
+      let try_paths = ["../../codal_plugin"; "../codal_plugin"; "codal_plugin"] in
+      let rec find_dir = function
+        | [] -> ""  (* Fallback to current directory *)
+        | path :: rest ->
+            (try
+              if Sys.file_exists path && Sys.is_directory path then
+                path ^ "/"
+              else
+                find_dir rest
+            with
+            | _ -> find_dir rest)
+      in
+      find_dir try_paths
+    in
     
     (* Write the ops file (isa_ops.codal) *)
-    let ops_filename = "isa_ops.codal" in
+    let ops_filename = output_dir ^ "isa_ops.codal" in
     let ops_out = open_out ops_filename in
     output_string ops_out ops_content;
     flush ops_out;
     close_out ops_out;
     Printf.eprintf "Generated ops file: %s\n" ops_filename;
+    
+    (* Write the opcodes header file (opcodes.hcodal) *)
+    let opcodes_filename = output_dir ^ "opcodes.hcodal" in
+    let opcodes_out = open_out opcodes_filename in
+    output_string opcodes_out opcodes_header_content;
+    flush opcodes_out;
+    close_out opcodes_out;
+    Printf.eprintf "Generated opcodes header file: %s\n" opcodes_filename;
     
     (* Prepare header and body for main file *)
     let header =

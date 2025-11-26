@@ -34,6 +34,7 @@ let codal_rewrites =
     ("simple_struct_assignments", []);
     ("exp_lift_assign", []);
     ("merge_function_clauses", []);
+    ("recheck_defs", []);  (* Recheck after merging to ensure type info is preserved *)
     ("constant_fold", [String_arg "codal"]);
   ]
 

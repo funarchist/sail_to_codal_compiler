@@ -4,10 +4,11 @@ $include <prelude.sail>
 
 $include "riscv_types_minimal.sail"
 
-union clause ast = ITYPE :  (bits(12), regidx, regidx, iop)
+/*union clause ast = ITYPE :  (bits(12), regidx, regidx, iop)
 
 
 mapping clause encdec = ITYPE(imm, rs1, rd, LLL) <-> imm @ encdec_reg(rs1) @ 000 @ encdec_reg(rd) @ 0b0101011
+*/
 
 
 
@@ -53,17 +54,17 @@ mapping rtype_mnemonic : rop <-> string = {
   SLTU <-> "sltu",
   AND  <-> "and",
   OR   <-> "or",
-  XOR  <-> "xor",
+  XOR  <-> "jol",
 /*  SLL  <-> "sll",
   SRL  <-> "srl",
    SRA  <-> "sra" */
 }
 
-/* Assembly syntax
+ Assembly syntax
 mapping clause assembly = RTYPE(rs2, rs1, rd, op)
   <-> rtype_mnemonic(op) ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1) ^ sep() ^ reg_name(rs2)
 
-*/
+
 
 /* ****************************************************************** */
 /*union clause ast = ITYPE : (bits(12), regidx, regidx, iop)

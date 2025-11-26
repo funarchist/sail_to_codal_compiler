@@ -1,5 +1,7 @@
 /* Minimal RISC-V types for Codal backend compatibility */
 
+default Order dec
+
 /*Eclectic mix of riscv_reg_type.sail
 riscv_regs.sail
 riscv_types.sail
@@ -12,8 +14,9 @@ riscv_types.sail
 
 $include <prelude.sail>
 
-
-
+/* Shift operators - ensure they're declared */
+infix 7 >>
+infix 7 <<
 
 /* Type definitions */
 newtype regidx = Regidx : bits(5)
