@@ -1080,7 +1080,8 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
       | None -> ""
     in
     
-    let generate_def_opc_calls () =
+    (* NOTE: Unused - using generate_family_block instead *)
+    let _generate_def_opc_calls () =
       let all_defs = List.map generate_def_opc_calls_for_family ast_clauses in
       let non_empty = List.filter (fun s -> s <> "") all_defs in
       String.concat "\n" non_empty
@@ -1103,7 +1104,8 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
       | None -> ""
     in
     
-    let generate_opc_set () =
+    (* NOTE: Unused - using generate_family_block instead *)
+    let _generate_opc_set () =
       let all_sets = List.map generate_opc_set_for_family ast_clauses in
       let non_empty = List.filter (fun s -> s <> "") all_sets in
       String.concat "\n" non_empty
@@ -1486,8 +1488,8 @@ module Codalgen (Config : CODALGEN_CONFIG) = struct
           constructor_lower opc_set_name use_regs use_imms assembly_syntax binary_encoding semantics
     in
     
-    (* Generate instruction elements for all families *)
-    let generate_instruction_elements () =
+    (* NOTE: Unused - using generate_family_block instead *)
+    let _generate_instruction_elements () =
       let elements = List.map generate_instruction_element ast_clauses in
       let non_empty = List.filter (fun s -> s <> "") elements in
       String.concat "\n\n" non_empty
