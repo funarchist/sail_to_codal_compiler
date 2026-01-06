@@ -1,1 +1,0 @@
-val translate : string list -> string list 
