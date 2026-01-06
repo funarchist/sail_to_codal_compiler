@@ -72,11 +72,11 @@ if sail --plugin ../../codal_plugin/_build/default/sail_plugin_codal_gold.cmxs \
   riscv_vmem_utils.sail \
   riscv_insts_begin.sail \
   riscv_insts_base.sail \
+  ../../codal_plugin/custom_riscv.sail \
   -o riscv_insts_base_codal 2>&1; then
   echo "✓ Compilation successful!"
   echo "Generated files:"
   ls -lh riscv_insts_base_codal.codal 2>/dev/null && echo "  - riscv_insts_base_codal.codal"
-  ls -lh ../../codal_plugin/isa_ops.codal 2>/dev/null && echo "  - codal_plugin/isa_ops.codal"
   ls -lh ../../codal_plugin/opcodes.hcodal 2>/dev/null && echo "  - codal_plugin/opcodes.hcodal"
 else
   echo "✗ Compilation failed or had errors (see output above)"
